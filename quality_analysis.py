@@ -50,14 +50,17 @@ GOLD = "#D68910"
 # ---------------------------------------------------------------------------
 # Each lot, the foundry measures gate oxide thickness on 5 wafers.
 # Target is 20.0 angstroms. Starting at lot 19, a deposition tool drifts
-# after maintenance and the mean creeps up. The chart should catch it.
+# after maintenance and the oxide comes out thinner. Thin oxide is what
+# breaks down under voltage stress, which links this chart to the #1
+# failure on the Pareto. The chart should catch the shift.
 
 N_LOTS = 30
 SUBGROUP = 5          # wafers measured per lot
 TARGET = 20.0         # angstroms
 SIGMA = 0.15          # normal process variation
 SHIFT_START = 19      # lot where the drift begins (1-indexed)
-SHIFT_SIZE = 0.22     # how far the mean moves
+SHIFT_SIZE = -0.22    # how far the mean moves (negative = thinner oxide)
+SPEC_LIMITS = (19.4, 20.6)  # customer spec: 20.0 +/- 0.6 Å (simulated)
 
 # Control chart constants for subgroup size n=5 (from standard SPC tables)
 A2, D3, D4 = 0.577, 0.0, 2.114
@@ -143,12 +146,14 @@ def plot_control_chart(df: pd.DataFrame, lim: dict) -> Path:
                 edgecolors=RED, lw=2, zorder=4, label="Rule violation")
     first = flagged.iloc[0] if not flagged.empty else None
     if first is not None:
+        below = first["xbar"] < lim["xbar_cl"]
+        text_y = lim["xbar_lcl"] - 0.12 if below else lim["xbar_ucl"] + 0.08
         ax1.annotate(f"First signal: lot {first['lot']}\n({first['violations']})",
                      xy=(first["lot_num"], first["xbar"]),
-                     xytext=(first["lot_num"] - 9, lim["xbar_ucl"] + 0.08),
+                     xytext=(first["lot_num"] - 9, text_y),
                      arrowprops=dict(arrowstyle="->", color=RED), color=RED, fontsize=9)
     ax1.axvspan(0.5, BASELINE_LOTS + 0.5, color=NAVY, alpha=0.05)
-    ax1.text(1, lim["xbar_lcl"] - 0.05, "Baseline lots used to set limits",
+    ax1.text(1, lim["xbar_lcl"] - 0.04, "Baseline lots used to set limits",
              fontsize=8, color=GRAY, va="top")
     for key, label in [("xbar_ucl", "UCL"), ("xbar_cl", "CL"), ("xbar_lcl", "LCL")]:
         ax1.text(N_LOTS + 0.7, lim[key], f"{label} {lim[key]:.3f}", va="center", fontsize=8,
@@ -156,10 +161,13 @@ def plot_control_chart(df: pd.DataFrame, lim: dict) -> Path:
     ax1.set_ylabel("Lot mean thickness (Å)")
     ax1.set_title("X-bar Chart: Gate Oxide Thickness, Foundry A", loc="left",
                   fontsize=12, fontweight="bold")
-    ax1.legend(loc="upper left", frameon=False, fontsize=9)
+    ax1.legend(loc="upper right", bbox_to_anchor=(1.0, 0.93), frameon=False, fontsize=9)
 
     # R chart
     ax2.plot(x, df["range"], marker="o", color=NAVY, lw=1.5, ms=5)
+    r_out = df[(df["range"] > lim["r_ucl"]) | (df["range"] < lim["r_lcl"])]
+    ax2.scatter(r_out["lot_num"], r_out["range"], s=110, facecolors="none",
+                edgecolors=RED, lw=2, zorder=4)
     ax2.axhline(lim["r_ucl"], color=RED, ls="--", lw=1)
     ax2.axhline(lim["r_cl"], color=GRAY, lw=1)
     ax2.axhline(lim["r_lcl"], color=RED, ls="--", lw=1)
@@ -447,6 +455,7 @@ def main() -> None:
     fmea_path = build_fmea()
 
     flagged = df[df["violations"] != ""]
+    r_out = df[df["range"] > lim["r_ucl"]]
     print("=== Control chart ===")
     print(f"Centerline {lim['xbar_cl']:.3f} Å | UCL {lim['xbar_ucl']:.3f} | "
           f"LCL {lim['xbar_lcl']:.3f}")
@@ -456,6 +465,9 @@ def main() -> None:
         print(f"First signal at lot {flagged.iloc[0]['lot']} "
               f"(drift was injected at lot L{SHIFT_START:02d})")
         print(flagged[["lot", "xbar", "violations"]].to_string(index=False))
+
+    for _, row in r_out.iterrows():
+        print(f"R chart signal: lot {row['lot']} range {row['range']:.3f} > UCL {lim['r_ucl']:.3f}")
 
     print("\n=== Pareto ===")
     print(pareto_table.to_string(index=False))
